@@ -1,0 +1,341 @@
+"""示例数据：真实业务场景种子数据，跨模块数据依赖链路种子。"""
+from __future__ import annotations
+
+from typing import Any
+
+SEED_ROWS: dict[str, list[dict[str, Any]]] = {
+    "cdc_source": [
+        {
+            "id": 1, "status": "监听中", "pending": True, "abnormal": False,
+            "源端编号": "PROD-MYSQL-01", "数据库类型": "MySQL 8.0",
+            "连接地址": "10.0.1.100:3306", "日志协议": "ROW格式binlog",
+            "监听表": "order_events", "包含列": "order_id,user_id,amount,status,event_time",
+            "排除列": "internal_flag", "连接状态": "稳定连接-延迟<5ms",
+        },
+        {
+            "id": 2, "status": "待连接", "pending": True, "abnormal": False,
+            "源端编号": "PROD-PG-02", "数据库类型": "PostgreSQL 15",
+            "连接地址": "10.0.2.50:5432", "日志协议": "pgoutput逻辑复制",
+            "监听表": "payment_log", "包含列": "txn_id,order_id,channel,amount,ts",
+            "排除列": "raw_blob", "连接状态": "待建立",
+        },
+        {
+            "id": 3, "status": "连接断开", "pending": True, "abnormal": True,
+            "源端编号": "PROD-MONGO-03", "数据库类型": "MongoDB 6.0",
+            "连接地址": "10.0.3.20:27017", "日志协议": "ChangeStream",
+            "监听表": "stock_snap", "包含列": "sku_id,warehouse,qty,version",
+            "排除列": "_id", "连接状态": "断连-网络超时",
+        },
+    ],
+    "binlog_parse": [
+        {
+            "id": 1, "status": "解析中", "pending": True, "abnormal": False,
+            "规则编号": "BINL-0001", "源端": "PROD-MYSQL-01",
+            "日志格式": "ROW-全字段", "事件过滤": "INSERT,UPDATE,DELETE",
+            "字段映射": "全列映射+时间戳标准化", "DDL处理": "自动同步",
+            "大事务拆分": "10000行/批", "解析速率": "8500 eps",
+        },
+        {
+            "id": 2, "status": "草稿", "pending": True, "abnormal": False,
+            "规则编号": "BINL-0002", "源端": "PROD-PG-02",
+            "日志格式": "pgoutput", "事件过滤": "INSERT,UPDATE",
+            "字段映射": "PG类型→通用类型映射", "DDL处理": "人工确认",
+            "大事务拆分": "不启用", "解析速率": "待启动",
+        },
+        {
+            "id": 3, "status": "速率下降", "pending": True, "abnormal": True,
+            "规则编号": "BINL-0003", "源端": "PROD-MONGO-03",
+            "日志格式": "ChangeStream BSON", "事件过滤": "INSERT,UPDATE,REPLACE,DELETE",
+            "字段映射": "BSON→JSON扁平化", "DDL处理": "不支持",
+            "大事务拆分": "5000行/批", "解析速率": "320 eps",
+        },
+    ],
+    "event_trans": [
+        {
+            "id": 1, "status": "转换中", "pending": True, "abnormal": False,
+            "管道编号": "ETR-0001", "源端": "PROD-MYSQL-01",
+            "事件类型": "INSERT,UPDATE,DELETE",
+            "转换函数": "flatten_nested,cast_timestamp,normalize_pk,enrich_with_meta",
+            "输出格式": "Avro-Schema-Registry", "失败策略": "写入死信队列+重试3次",
+            "转换顺序": "先扁平后类型转换再属性补全", "最近吞吐": "12.5k eps",
+        },
+        {
+            "id": 2, "status": "草稿", "pending": True, "abnormal": False,
+            "管道编号": "ETR-0002", "源端": "PROD-PG-02",
+            "事件类型": "INSERT,UPDATE",
+            "转换函数": "pg_to_avro,add_partition_key,hash_shard",
+            "输出格式": "Parquet", "失败策略": "写入错误日志跳过",
+            "转换顺序": "先分区后类型转换", "最近吞吐": "待启动",
+        },
+        {
+            "id": 3, "status": "转换过载", "pending": True, "abnormal": True,
+            "管道编号": "ETR-0003", "源端": "PROD-MONGO-03",
+            "事件类型": "INSERT,UPDATE,REPLACE,DELETE",
+            "转换函数": "bson_extract,deep_flatten,type_coerce",
+            "输出格式": "JSON-Binary", "失败策略": "死信队列",
+            "转换顺序": "顺序处理-过载降级", "最近吞吐": "420 eps",
+        },
+    ],
+    "dim_join": [
+        {
+            "id": 1, "status": "关联中", "pending": True, "abnormal": False,
+            "配置编号": "DIMJ-0001", "事实表": "order_events_cdc",
+            "维度表": "dim_customer_profile", "关联键": "customer_id",
+            "关联类型": "LEFT JOIN", "缺失策略": "填充默认画像",
+            "缓存TTL": "300s", "命中率": "92.5%",
+        },
+        {
+            "id": 2, "status": "缓存失效", "pending": True, "abnormal": True,
+            "配置编号": "DIMJ-0002", "事实表": "payment_log_cdc",
+            "维度表": "dim_merchant_info", "关联键": "merchant_id",
+            "关联类型": "INNER JOIN", "缺失策略": "丢弃关联失败行",
+            "缓存TTL": "600s", "命中率": "34.2%",
+        },
+    ],
+    "watermark_mgr": [
+        {
+            "id": 1, "status": "已追上", "pending": True, "abnormal": False,
+            "水位编号": "WM-0001", "数据流": "order_events_cdc",
+            "当前位点": "binlog.001234:891200", "提交位点": "binlog.001234:891200",
+            "延迟行数": 0, "水位类型": "事件时间水位",
+            "最后推进": "2026-11-18 10:32:15", "追赶进度": "100%",
+        },
+        {
+            "id": 2, "status": "水位延迟", "pending": True, "abnormal": True,
+            "水位编号": "WM-0002", "数据流": "payment_log_cdc",
+            "当前位点": "pg_lsn.0/3E82A00", "提交位点": "pg_lsn.0/3E82A00",
+            "延迟行数": 45230, "水位类型": "处理时间水位",
+            "最后推进": "2026-11-18 09:15:00", "追赶进度": "47%",
+        },
+    ],
+    "out_of_order": [
+        {
+            "id": 1, "status": "生效中", "pending": True, "abnormal": False,
+            "策略编号": "OOO-0001", "数据流": "order_events_cdc",
+            "时间字段": "event_time", "允许迟到": "300s",
+            "乱序窗口": "5min", "纠错模式": "按event_time重排",
+            "丢弃行数": 12, "修正行数": 2305,
+        },
+        {
+            "id": 2, "status": "超窗口丢弃", "pending": True, "abnormal": True,
+            "策略编号": "OOO-0002", "数据流": "stock_snap_cdc",
+            "时间字段": "update_ts", "允许迟到": "60s",
+            "乱序窗口": "1min", "纠错模式": "最近版本覆盖",
+            "丢弃行数": 1230, "修正行数": 0,
+        },
+    ],
+    "sink_writer": [
+        {
+            "id": 1, "status": "写入中", "pending": True, "abnormal": False,
+            "管道编号": "SK-0001", "数据流": "order_events_cdc",
+            "目标载体": "ads.order_events_iceberg", "写入模式": "UPSERT",
+            "分区列": "ds=event_date", "批次大小": "5000行/批",
+            "压缩格式": "ZSTD-Level3", "写入速率": "800MB/min",
+        },
+        {
+            "id": 2, "status": "写入阻塞", "pending": True, "abnormal": True,
+            "管道编号": "SK-0002", "数据流": "payment_log_cdc",
+            "目标载体": "ods.payment_log_iceberg", "写入模式": "APPEND",
+            "分区列": "ds=txn_date", "批次大小": "1000行/批",
+            "压缩格式": "SNAPPY", "写入速率": "5MB/min",
+        },
+    ],
+    "lag_monitor": [
+        {
+            "id": 1, "status": "正常", "pending": True, "abnormal": False,
+            "指标编号": "LAG-0001", "数据流": "order_events_cdc",
+            "源端位点": "binlog.001234:890000",
+            "处理位点": "binlog.001234:891200",
+            "延迟秒数": "0.8", "告警阈值": "30s",
+            "最近采样": "2026-11-18 10:33:00", "采样间隔": "5s",
+        },
+        {
+            "id": 2, "status": "严重滞后", "pending": True, "abnormal": True,
+            "指标编号": "LAG-0002", "数据流": "payment_log_cdc",
+            "源端位点": "pg_lsn.0/3FAB100",
+            "处理位点": "pg_lsn.0/3E82A00",
+            "延迟秒数": "1230", "告警阈值": "60s",
+            "最近采样": "2026-11-18 10:33:00", "采样间隔": "10s",
+        },
+    ],
+    "checkpoint": [
+        {
+            "id": 1, "status": "已保存", "pending": True, "abnormal": False,
+            "检查点编号": "CK-0001", "数据流": "order_events_cdc",
+            "保存位点": "binlog.001234:891200",
+            "保存时间": "2026-11-18 10:35:00",
+            "恢复状态": "就绪-可秒级恢复",
+            "丢失行数": 0, "回放代价": "预估3.2s",
+            "恢复耗时": "未触发",
+        },
+        {
+            "id": 2, "status": "已恢复", "pending": True, "abnormal": False,
+            "检查点编号": "CK-0002", "数据流": "payment_log_cdc",
+            "保存位点": "pg_lsn.0/3E82A00",
+            "保存时间": "2026-11-18 09:15:00",
+            "恢复状态": "已恢复-开始追赶",
+            "丢失行数": 12890, "回放代价": "预估42min",
+            "恢复耗时": "已耗18min",
+        },
+    ],
+    "iceberg_commit": [
+        {
+            "id": 1, "status": "已提交", "pending": True, "abnormal": False,
+            "快照编号": "IC-0001", "目标表": "ads.order_events_iceberg",
+            "数据文件": "s3://warehouse/ads/order_events/data/part-00001.parquet",
+            "清单文件": "metadata/manifest-1001.avro",
+            "快照ID": "9182736450123456789",
+            "提交状态": "COMMITTED", "影响行数": 128340,
+            "提交时间": "2026-11-18 10:32:45",
+        },
+        {
+            "id": 2, "status": "提交冲突", "pending": True, "abnormal": True,
+            "快照编号": "IC-0002", "目标表": "ods.payment_log_iceberg",
+            "数据文件": "s3://warehouse/ods/payment_log/data/part-00015.parquet",
+            "清单文件": "metadata/manifest-2005.avro",
+            "快照ID": "冲突-并发写入检测",
+            "提交状态": "CONFLICT", "影响行数": 0,
+            "提交时间": "2026-11-18 10:31:00",
+        },
+    ],
+    "compaction": [
+        {
+            "id": 1, "status": "已完成", "pending": False, "abnormal": False,
+            "任务编号": "CMP-0001", "目标表": "ads.order_events_iceberg",
+            "文件数量": 42, "合并策略": "BinPack-128MB",
+            "触发阈值": "文件数>=30触发", "执行内存": "2GB",
+            "合并耗时": "12.5s", "释放空间": "450MB",
+        },
+        {
+            "id": 2, "status": "合并中", "pending": True, "abnormal": False,
+            "任务编号": "CMP-0002", "目标表": "ods.payment_log_iceberg",
+            "文件数量": 95, "合并策略": "Sort-Merge-按txn_date",
+            "触发阈值": "文件数>=50触发", "执行内存": "4GB",
+            "合并耗时": "进行中...", "释放空间": "预估1.2GB",
+        },
+    ],
+    "ddl_handle": [
+        {
+            "id": 1, "status": "已应用", "pending": True, "abnormal": False,
+            "适配编号": "DDL-0001", "源端": "PROD-MYSQL-01",
+            "DDL类型": "ALTER TABLE ADD COLUMN",
+            "影响表": "order_events", "兼容策略": "向后兼容+默认值填充",
+            "自动应用": "是", "人工确认": "已确认", "处理状态": "完成",
+        },
+    ],
+    "schema_evo": [
+        {
+            "id": 1, "status": "兼容通过", "pending": True, "abnormal": False,
+            "记录编号": "SE-0001", "数据流": "order_events_cdc",
+            "变更列": "customer_tier(ENUM→VARCHAR)",
+            "列变更前": "ENUM('bronze','silver','gold')",
+            "列变更后": "VARCHAR(32)",
+            "兼容模式": "向前兼容", "下游影响": "仅影响实时打标任务",
+            "演进时间": "2026-11-18 10:32:20",
+        },
+    ],
+    "backfill_run": [
+        {
+            "id": 1, "status": "回填中", "pending": True, "abnormal": False,
+            "任务编号": "BF-0001", "目标表": "payment_log_cdc",
+            "起始位点": "pg_lsn.0/3E82A00",
+            "截止位点": "pg_lsn.0/3FAB100",
+            "回填模式": "批量并行回填", "并行粒度": "按小时分区",
+            "当前进度": "42%", "回填速率": "350 eps",
+        },
+    ],
+    "alert_rule": [
+        {
+            "id": 1, "status": "已触发", "pending": True, "abnormal": True,
+            "策略编号": "ALT-0001", "监控指标": "实时延迟",
+            "告警条件": "延迟 > 60s 持续3min",
+            "告警级别": "P1-紧急", "通知渠道": "飞书群+电话",
+            "聚合窗口": "3min", "静默时段": "0-6点静默", "触发次数": 8,
+        },
+        {
+            "id": 2, "status": "监控中", "pending": True, "abnormal": False,
+            "策略编号": "ALT-0002", "监控指标": "维表缓存命中率",
+            "告警条件": "命中率 < 60% 持续5min",
+            "告警级别": "P2-警告", "通知渠道": "飞书群",
+            "聚合窗口": "5min", "静默时段": "周六日夜间", "触发次数": 3,
+        },
+    ],
+    "data_diff": [
+        {
+            "id": 1, "status": "存在差异", "pending": True, "abnormal": True,
+            "任务编号": "DDF-0001", "源端": "PROD-MYSQL-01",
+            "目标端": "ods.payment_log_iceberg",
+            "比对字段": "全字段", "差异类型": "数据丢失",
+            "差异行数": 456, "修复建议": "回滚pg_snapshot并重放",
+            "比对时间": "2026-11-18 10:38:00",
+        },
+    ],
+    "stream_health": [
+        {
+            "id": 1, "status": "已出分", "pending": True, "abnormal": False,
+            "评估编号": "SH-0001", "数据流": "order_events_cdc",
+            "健康分数": 92, "风险项": "低风险-运行稳定",
+            "修复建议": "无需修复", "评估时间": "2026-11-18 10:40:00",
+            "下次评估": "2026-11-18 11:00:00", "评估状态": "健康",
+        },
+        {
+            "id": 2, "status": "需修复", "pending": True, "abnormal": True,
+            "评估编号": "SH-0002", "数据流": "payment_log_cdc",
+            "健康分数": 38, "风险项": "高延迟+写入阻塞+提交冲突",
+            "修复建议": "扩容处理节点+增量回填+清理锁表",
+            "评估时间": "2026-11-18 10:40:00",
+            "下次评估": "2026-11-18 10:50:00", "评估状态": "需立即修复",
+        },
+    ],
+    "metric_aggr": [
+        {
+            "id": 1, "status": "聚合中", "pending": True, "abnormal": False,
+            "窗口编号": "MAG-0001", "数据流": "order_events_cdc",
+            "聚合键": "event_type", "聚合函数": "COUNT,SUM(amount),AVG(response_time)",
+            "窗口宽度": "1h", "输出频率": "每15min",
+            "延迟更新": "允许延迟", "最后写入": "2026-11-18 10:45:00",
+        },
+    ],
+    "dedup_stream": [
+        {
+            "id": 1, "status": "去重中", "pending": True, "abnormal": False,
+            "窗口编号": "DED-0001", "数据流": "order_events_cdc",
+            "去重键": "order_id+event_time", "窗口宽度": "10min",
+            "去重算法": "BloomFilter-误杀率0.01%",
+            "误杀率": "0.008%", "内存占用": "128MB",
+            "最近命中": "3420次/h",
+        },
+    ],
+    "expire_snap": [
+        {
+            "id": 1, "status": "生效中", "pending": True, "abnormal": False,
+            "策略编号": "XPI-0001", "目标表": "ads.order_events_iceberg",
+            "保留数量": 10, "保留天数": "7天",
+            "清理模式": "按快照创建时间过期+保留最新N个",
+            "预演结果": "待清理23个历史快照",
+            "下次执行": "2026-11-19 02:00:00",
+            "上次清理": "2026-11-18 02:00:00",
+        },
+    ],
+    "task_schedule": [
+        {
+            "id": 1, "status": "执行中", "pending": True, "abnormal": False,
+            "计划编号": "TSK-0001", "关联链路": "order_events_cdc同步链路",
+            "Cron表达式": "0 */2 * * *", "时区设置": "Asia/Shanghai",
+            "前置检查": "源端连接可用+水位一致",
+            "失败通知": "飞书+Duty值班电话",
+            "最大并发": 5, "下次执行": "2026-11-18 12:00:00",
+        },
+    ],
+    "stream_audit": [
+        {
+            "id": 1, "status": "已复核", "pending": False, "abnormal": False,
+            "记录编号": "SA-0001", "数据流": "order_events_cdc",
+            "操作类型": "DDL-ALTER-TABLE-ADD-COLUMN",
+            "影响表": "order_events", "操作人": "dba_ops",
+            "操作时间": "2026-11-18 09:00:00",
+            "审计结论": "DDL变更向前兼容-已放行",
+            "合规标记": "合规",
+        },
+    ],
+}
