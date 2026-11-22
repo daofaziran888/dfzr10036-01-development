@@ -10,9 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import ROUTERS
+from app.services.backfill_coverage import backfill_coverage_service
 from app.store import store
 
 app = FastAPI(title="流变工坊 · 实时CDC与流式数据同步平台", version="1.0.0")
+
+
+@app.on_event("startup")
+def seed_backfill_coverage_scenario() -> None:
+    """启动即注入断点恢复演练场景（订单流缺口 101-130 等）。"""
+    backfill_coverage_service.seed_demo_scenario()
 
 app.add_middleware(
     CORSMiddleware,

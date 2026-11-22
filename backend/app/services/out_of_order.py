@@ -1,9 +1,11 @@
 """乱序处理服务：乱序策略生效后级联延迟监控和断点恢复。"""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.backfill_coverage import backfill_coverage_service
 from app.store import store
 
 
@@ -16,6 +18,17 @@ class OutOfOrderService(BaseModuleService):
     STATUS_ORDER = ["草稿", "生效中", "超窗口丢弃", "已停用"]
     ACTION_RULES = {"启效策略": "生效中", "扩窗容忍": "超窗口丢弃", "停用策略": "已停用"}
     NEGATIVE_ACTIONS = ["停用策略"]
+
+    # 乱序超窗入口注入丢弃区间时需要透传的扩展字段（如 丢弃区间=101-130）
+    GAP_FIELDS = ["丢弃区间"]
+
+    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+        entry, missing = super().create_entry(values)
+        if entry is not None:
+            for field in self.GAP_FIELDS:
+                if field in values:
+                    entry[field] = values.get(field)
+        return entry, missing
 
     def trigger_lag_monitor_update(self, entry_id: int) -> dict[str, Any] | None:
         """乱序策略生效后，更新lag_monitor中的乱序相关延迟指标。
@@ -104,5 +117,19 @@ class OutOfOrderService(BaseModuleService):
         }
         cp_rows.append(cp)
         results["checkpoint"] = cp
+
+        # 沿用乱序超窗入口，向回填区间数据视图注入丢弃区间。
+        # 支持「丢弃区间」字段（如 101-130），未配置时按丢弃行数从位点 1 起占位。
+        tag = str(entry.get("数据流", ""))
+        interval = str(entry.get("丢弃区间", "")).strip()
+        match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", interval)
+        if match:
+            lo, hi = int(match.group(1)), int(match.group(2))
+        else:
+            lo, hi = 1, max(int(entry.get("丢弃行数", 0) or 0), 1)
+        results["gap_injection"] = backfill_coverage_service.inject_gap(
+            tag, lo, hi, source="out_of_order",
+            source_ref=str(entry.get("策略编号", "")),
+        )
 
         return results

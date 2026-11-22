@@ -1,9 +1,11 @@
 """检查点服务：断点恢复时触发水位重置和回填任务。"""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.backfill_coverage import backfill_coverage_service
 from app.store import store
 
 
@@ -17,6 +19,17 @@ class CheckpointService(BaseModuleService):
     ACTION_RULES = {"触发恢复": "恢复中", "确认恢复": "已恢复", "标记失败": "恢复失败"}
     NEGATIVE_ACTIONS = []
 
+    # 断点恢复入口注入在途回填批次时需要透传的扩展字段
+    INFLIGHT_FIELDS = ["在途区间", "执行端", "连接状态", "在途批次"]
+
+    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+        entry, missing = super().create_entry(values)
+        if entry is not None:
+            for field in self.INFLIGHT_FIELDS:
+                if field in values:
+                    entry[field] = values.get(field)
+        return entry, missing
+
     def trigger_watermark_reset_and_backfill(self, entry_id: int) -> dict[str, Any]:
         """断点恢复后触发水位重置和回填任务。
 
@@ -27,7 +40,21 @@ class CheckpointService(BaseModuleService):
             return None
 
         tag = str(entry.get("数据流", ""))
-        results: dict[str, Any] = {"watermark": None, "backfill": None}
+        results: dict[str, Any] = {"watermark": None, "backfill": None, "inflight_injection": None}
+
+        # 断点恢复入口注入在途回填批次（字段「在途区间」如 111-120，
+        # 「执行端」给出持有方，「连接状态」区分失联占用）。
+        interval = str(entry.get("在途区间", "")).strip()
+        match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", interval)
+        if match:
+            lo, hi = int(match.group(1)), int(match.group(2))
+            executor = str(entry.get("执行端", "执行端")).strip() or "执行端"
+            connected = str(entry.get("连接状态", "")).strip() not in ("失联", "断开", "false", "False")
+            batch_no = str(entry.get("在途批次", "")).strip() or None
+            results["inflight_injection"] = backfill_coverage_service.register_inflight_batch(
+                tag, lo, hi, executor=executor, batch_no=batch_no,
+                connected=connected, source_ref=str(entry.get("检查点编号", "checkpoint")),
+            )
 
         if entry.get("status") == "已恢复":
             # 重置水位
